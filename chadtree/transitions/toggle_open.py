@@ -68,18 +68,11 @@ async def _ensure_side_window(
     window: Window,
 ) -> None:
     open_left = settings.open_left
-    open_right = settings.open_right
-    windows = [
-        win
-        async for win in find_windows_in_tab(last_used=window_order, no_secondary=False)
-    ]
-    target = windows[0] if open_left else windows[-1]
-    if window.data != target.data:
-        if open_right:
-            await Nvim.exec("wincmd L")
-        elif open_left:
-            await Nvim.exec("wincmd H")
-        await resize_fm_windows(last_used=window_order, width=width)
+    if open_left:
+        await Nvim.exec("wincmd H")
+    else:
+        await Nvim.exec("wincmd L")
+    await resize_fm_windows(last_used=window_order, width=width)
 
 
 async def _open_fm_window(
