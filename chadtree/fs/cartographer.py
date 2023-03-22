@@ -1,10 +1,10 @@
 from asyncio import Queue, gather
 from contextlib import suppress
 from fnmatch import fnmatch
+from os.path import normcase
 from os import scandir, stat, stat_result
-from pathlib import PurePath
+from pathlib import Path, PurePath
 from stat import (
-    S_IEXEC,
     S_IFDOOR,
     S_ISBLK,
     S_ISCHR,
@@ -17,6 +17,7 @@ from stat import (
     S_ISUID,
     S_ISVTX,
     S_IWOTH,
+    S_IXUSR,
 )
 from typing import (
     AbstractSet,
@@ -27,6 +28,7 @@ from typing import (
     MutableMapping,
     Optional,
     Sequence,
+    Tuple,
     cast,
 )
 
@@ -39,7 +41,7 @@ from .ops import ancestors, lock
 from .types import Ignored, Mode, Node
 
 _FILE_MODES: Mapping[int, Mode] = {
-    S_IEXEC: Mode.executable,
+    S_IXUSR: Mode.executable,
     S_IFDOOR: Mode.door,
     S_ISGID: Mode.set_gid,
     S_ISUID: Mode.set_uid,
@@ -70,30 +72,31 @@ def _fs_modes(stat: stat_result) -> Iterator[Mode]:
             yield mode
 
 
-async def _fs_stat(path: PurePath) -> AbstractSet[Mode]:
-    def cont() -> AbstractSet[Mode]:
+async def _fs_stat(path: PurePath) -> Tuple[AbstractSet[Mode], Optional[PurePath]]:
+    def cont() -> Tuple[AbstractSet[Mode], Optional[PurePath]]:
         try:
             info = stat(path, follow_symlinks=False)
         except FileNotFoundError:
-            return {Mode.orphan_link}
+            return {Mode.orphan_link}, None
         else:
             if S_ISLNK(info.st_mode):
                 try:
-                    link_info = stat(path, follow_symlinks=True)
-                except (FileNotFoundError, NotADirectoryError):
-                    return {Mode.orphan_link}
+                    pointed = Path(path).resolve(strict=True)
+                    link_info = stat(pointed, follow_symlinks=False)
+                except (FileNotFoundError, NotADirectoryError, RuntimeError):
+                    return {Mode.orphan_link}, None
                 else:
                     mode = {*_fs_modes(link_info)}
-                    return mode | {Mode.link}
+                    return mode | {Mode.link}, pointed
             else:
                 mode = {*_fs_modes(info)}
-                return mode
+                return mode, None
 
     return await to_thread(cont)
 
 
 def _listdir(path: PurePath) -> Iterator[Sequence[PurePath]]:
-    with suppress(NotADirectoryError):
+    with suppress(NotADirectoryError, FileNotFoundError):
         with scandir(path) as it:
             chunked = chunk(it, WALK_PARALLELISM_FACTOR)
             while True:
@@ -108,11 +111,12 @@ async def _next(
 ) -> None:
     for root in roots:
         with suppress(PermissionError):
-            mode = await _fs_stat(root)
+            mode, pointed = await _fs_stat(root)
             _ancestors = ancestors(root)
             node = Node(
                 path=root,
                 mode=mode,
+                pointed=pointed,
                 ancestors=_ancestors,
             )
             await acc.put(node)
@@ -179,6 +183,7 @@ async def _update(root: Node, index: Index, paths: AbstractSet[PurePath]) -> Nod
         return Node(
             path=root.path,
             mode=root.mode,
+            pointed=root.pointed,
             ancestors=root.ancestors,
             children=children,
         )
@@ -188,7 +193,7 @@ def user_ignored(node: Node, ignores: Ignored) -> bool:
     return (
         node.path.name in ignores.name_exact
         or any(fnmatch(node.path.name, pattern) for pattern in ignores.name_glob)
-        or any(fnmatch(str(node.path), pattern) for pattern in ignores.path_glob)
+        or any(fnmatch(normcase(node.path), pattern) for pattern in ignores.path_glob)
     )
 
 

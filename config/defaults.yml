@@ -44,6 +44,8 @@ keymap:
     - W
   jump_to_current:
     - J
+  link:
+    - A
   new:
     - a
   open_sys:
@@ -71,6 +73,8 @@ keymap:
   tertiary:
     - <m-enter>
     - <middlemouse>
+  toggle_exec:
+    - X
   toggle_follow:
     - u
   toggle_hidden:
